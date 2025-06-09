@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant User as 사용자
+    participant DialogAgent as 대화 에이전트
+    participant ConversationManager as 대화 관리자
+    participant SuperAgent as Super Agent
+    participant TouristAgent as 관광지 조사원
+    participant TransportAgent as 교통 조사원
+    participant PlannerAgent as 일정 계획자
+    participant ContextStore as 대화 컨텍스트 저장소
+
+    User->>DialogAgent: "서울에서 데이트 계획 짜줘"
+    DialogAgent->>ConversationManager: 대화 컨텍스트 초기화
+    ConversationManager->>ContextStore: 컨텍스트 저장
+    
+    DialogAgent->>SuperAgent: 초기 계획 요청
+    SuperAgent->>TouristAgent: 관광지 조사 요청
+    
+    TouristAgent->>TouristAgent: 관광지 검색
+    TouristAgent->>SuperAgent: 후보 관광지 리스트 반환
+    
+    SuperAgent->>DialogAgent: 사용자 선택 필요
+    DialogAgent->>User: "이 중에서 가고 싶은 곳을 선택해주세요 🏛️⛩️🎨"
+    
+    Note over User,DialogAgent: 사용자 상호작용 구간
+    User->>DialogAgent: "경복궁이랑 인사동 가고 싶어"
+    DialogAgent->>ConversationManager: 선택 정보 업데이트
+    ConversationManager->>ContextStore: 컨텍스트 갱신
+    
+    DialogAgent->>SuperAgent: 선택된 장소로 계속 진행
+    SuperAgent->>TransportAgent: 선택된 장소 기반 교통 조사
+    SuperAgent->>PlannerAgent: 일정 계획 생성
+    
+    PlannerAgent->>SuperAgent: 초안 계획 완성
+    SuperAgent->>DialogAgent: 계획 초안 전달
+    DialogAgent->>User: "이런 일정 어떠세요? ⏰📍"
+    
+    Note over User,DialogAgent: 추가 질문 시나리오
+    User->>DialogAgent: "경복궁에 대해 더 자세히 알려줘"
+    DialogAgent->>ConversationManager: 추가 정보 요청 분석
+    
+    alt 기존 데이터로 답변 가능
+        ConversationManager->>ContextStore: 상세 정보 조회
+        DialogAgent->>User: "경복궁은 1395년에 건립된... 🏛️"
+    else 추가 조사 필요
+        ConversationManager->>TouristAgent: 상세 정보 조사 요청
+        TouristAgent->>DialogAgent: 상세 정보 반환
+        DialogAgent->>User: "추가로 알아본 정보예요! 📖"
+    end
+    
+    Note over User,DialogAgent: 날씨 질문 시나리오
+    User->>DialogAgent: "그날 날씨는 어때?"
+    DialogAgent->>ConversationManager: 의도 분석 (날씨 문의)
+    ConversationManager->>SuperAgent: 날씨 정보 요청
+    SuperAgent->>WeatherAgent: 날씨 조사 (새 에이전트)
+    WeatherAgent->>SuperAgent: 날씨 정보 반환
+    SuperAgent->>DialogAgent: 날씨 + 추천사항
+    DialogAgent->>User: "맑을 예정이에요! ☀️ 야외 활동 좋겠네요"
+    
+    Note over User,DialogAgent: 계획 수정 시나리오
+    User->>DialogAgent: "시간을 더 여유롭게 해줘"
+    DialogAgent->>ConversationManager: 수정 요청 분석
+    ConversationManager->>ContextStore: 수정 사항 반영
+    ConversationManager->>PlannerAgent: 계획 재조정 요청
+    PlannerAgent->>DialogAgent: 수정된 계획
+    DialogAgent->>User: "여유있게 조정했어요! ⏰✨"
+    
+    Note over User,DialogAgent: 최종 확정
+    User->>DialogAgent: "완벽해! 이걸로 확정할게"
+    DialogAgent->>ConversationManager: 계획 확정
+    ConversationManager->>ContextStore: 최종 저장
+    DialogAgent->>User: "확정 완료! 즐거운 데이트 되세요 💕"

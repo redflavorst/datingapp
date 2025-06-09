@@ -1,210 +1,199 @@
 # src/application/agents/dialog/dialog_agent.py
-from typing import Dict, List, Optional, Tuple, Any
+import os
+import json
 import re
-from datetime import datetime
-import uuid
+from typing import Dict, List, Optional, Tuple, Any
+import uuid 
+import asyncio 
 
+# google-generativeai 라이브러리 import
+import google.generativeai as genai
+from dotenv import load_dotenv 
+
+# 기존 import 유지 및 UserQuery 경로 확인
 from ....domain.entities.conversation import (
-    Conversation, ConversationTurn, UserQuery, 
+    Conversation, ConversationTurn, UserQuery,
     ConversationState, InteractionType
 )
 
+# .env 파일에서 환경 변수 로드
+# dialog_agent.py 파일의 위치를 기준으로 .env 파일 경로 설정
+# (src/application/agents/dialog/dialog_agent.py -> datingapp/.env)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ENV_PATH = os.path.join(BASE_DIR, '.env')
+if os.path.exists(ENV_PATH):
+    load_dotenv(dotenv_path=ENV_PATH)
+else:
+    print(f"Warning: .env file not found at {ENV_PATH}. Make sure GOOGLE_API_KEY is set in your environment.")
+
 class DialogAgent:
-    """기본 대화 에이전트 - 사용자와의 상호작용을 관리"""
-    
+    """기본 대화 에이전트 - 사용자와의 상호작용을 관리 (Gemini LLM 사용)"""
+
     def __init__(self):
         self.conversation_memory: Dict[str, Conversation] = {}
+
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        if not google_api_key:
+            print("CRITICAL: GOOGLE_API_KEY가 환경 변수에 설정되지 않았습니다. LLM 기능이 작동하지 않을 수 있습니다.")
+            self.gemini_model = None
+        else:
+            try:
+                genai.configure(api_key=google_api_key)
+                self.gemini_model = genai.GenerativeModel(
+                    model_name="gemini-1.5-flash", 
+                )
+            except Exception as e:
+                print(f"Error initializing Gemini model: {e}")
+                self.gemini_model = None
+
+    async def _extract_entities_with_gemini(self, text: str) -> Dict[str, Any]:
+        """Gemini를 사용하여 사용자 입력에서 주요 정보 추출 (비동기)"""
+        if not self.gemini_model:
+            print("Error: Gemini model is not initialized. Cannot extract entities.")
+            return {}
+
+        prompt = f"""
+        다음 사용자 입력에서 데이트 계획과 관련된 주요 정보를 추출하여 JSON 형식으로 반환해주세요.
+        추출할 정보는 "location", "budget", "date", "interests" 입니다.
+        - location: 장소 (예: "강남", "홍대입구역 근처"). 문자열.
+        - budget: 숫자 형태의 예산 (예: 50000, 100000). 숫자. 언급 없으면 null.
+        - date: 날짜 또는 시간 관련 표현 (예: "내일 저녁 7시", "주말 오후"). 문자열. 언급 없으면 null.
+        - interests: 관심사 또는 활동 목록 (예: ["맛집 탐방", "영화 감상", "산책"]). 문자열 리스트. 언급 없으면 null.
+
+        사용자 입력: "{text}"
+
+        JSON 형식의 응답 예시 (다른 설명 없이 JSON만 반환):
+        {{ "location": "강남", "budget": 50000, "date": "내일 저녁 7시", "interests": ["맛집 탐방", "영화 감상"] }}
+        만약 특정 정보가 없다면 해당 키의 값은 null 또는 빈 리스트/문자열로 설정해주세요.
+        """
+        try:
+            response = await self.gemini_model.generate_content_async(prompt)
+            content_string = ""
+            if hasattr(response, 'text') and response.text:
+                content_string = response.text
+            elif hasattr(response, 'parts') and response.parts:
+                 content_string = "".join(part.text for part in response.parts if hasattr(part, 'text'))
+            else:
+                print(f"Warning: Gemini로부터 유효한 응답 텍스트를 받지 못했습니다. Response: {response}")
+                return {}
+            
+            match = re.search(r"```json\s*(\{.*?\})\s*```", content_string, re.DOTALL | re.IGNORECASE)
+            if not match:
+                match = re.search(r"(\{.*?\})", content_string, re.DOTALL)
+
+            if match:
+                json_string = match.group(1)
+                entities = json.loads(json_string)
+                return entities
+            else:
+                print(f"Warning: Gemini가 유효한 JSON을 반환하지 않았습니다. 정제된 응답: {content_string}")
+                try:
+                    return json.loads(content_string) 
+                except json.JSONDecodeError as e_json:
+                    print(f"Error: Gemini 응답을 JSON으로 파싱하는데 실패했습니다: {e_json}")
+                    return {}
+
+        except Exception as e:
+            print(f"Gemini 호출 또는 응답 파싱 중 오류 발생: {e}")
+            return {}
+
+    async def parse_user_query(self, user_input: str, session_id: str) -> UserQuery:
+        query = UserQuery(text=user_input, session_id=session_id)
+
+        if not self.gemini_model:
+            print("Warning: Gemini 모델이 초기화되지 않아 질의 파싱을 건너뜁니다.")
+            query.parsed = False
+            query.confidence_score = 0.0
+            return query
+
+        extracted_entities = await self._extract_entities_with_gemini(user_input)
+
+        query.location = extracted_entities.get("location")
+        budget_value = extracted_entities.get("budget")
+        if isinstance(budget_value, (int, float)):
+            query.budget = float(budget_value)
+        elif isinstance(budget_value, str):
+            try:
+                cleaned_budget_str = re.sub(r'[^\d.]', '', budget_value)
+                if cleaned_budget_str: query.budget = float(cleaned_budget_str)
+                else: query.budget = None
+            except ValueError: query.budget = None
+        else: query.budget = None
+
+        query.date = extracted_entities.get("date")
+        interests_value = extracted_entities.get("interests")
+        if isinstance(interests_value, list):
+            query.add_preference("interests", [str(i) for i in interests_value if i])
+        elif isinstance(interests_value, str) and interests_value:
+            query.add_preference("interests", [i.strip() for i in interests_value.split(',') if i.strip()])
         
+        if extracted_entities:
+            query.parsed = True
+            query.confidence_score = self._calculate_confidence_from_gemini(extracted_entities)
+        else:
+            query.parsed = False
+            query.confidence_score = 0.0
+        return query
+
+    def _calculate_confidence_from_gemini(self, entities: Dict[str, Any]) -> float:
+        score = 0.0
+        if entities.get("location"): score += 0.35
+        if entities.get("date"): score += 0.25
+        interests = entities.get("interests")
+        if isinstance(interests, list) and interests: score += 0.20
+        elif isinstance(interests, str) and interests: score += 0.10
+        if entities.get("budget") is not None: score += 0.10
+        return min(score, 1.0)
+
     async def start_conversation(self, session_id: str, user_input: str) -> Tuple[str, Dict[str, Any]]:
-        """새로운 대화 시작"""
-        
-        # 사용자 질의 파싱
         user_query = await self.parse_user_query(user_input, session_id)
-        
-        # 대화 객체 생성
         conversation = Conversation(
-            session_id=session_id,
-            initial_query=user_query,
+            session_id=session_id, initial_query=user_query,
             current_state=ConversationState.INITIAL_PLANNING
         )
-        
-        # 메모리에 저장
         self.conversation_memory[session_id] = conversation
-        
-        # 초기 응답 생성
         response = await self._generate_initial_response(user_query)
-        
-        # 대화 턴 기록
         turn = ConversationTurn(
-            turn_id=f"turn_{len(conversation.turns) + 1}",
-            user_input=user_input,
-            agent_response=response,
-            interaction_type=InteractionType.INITIAL_QUERY,
+            turn_id=f"turn_{len(conversation.turns) + 1}", user_input=user_input,
+            agent_response=response, interaction_type=InteractionType.INITIAL_QUERY,
             state_after=ConversationState.INITIAL_PLANNING
         )
-        
         conversation.add_turn(turn)
-        
         return response, {"conversation_state": conversation.current_state.value}
-    
+
     async def handle_user_input(self, session_id: str, user_input: str) -> Tuple[str, Dict[str, Any]]:
-        """사용자 입력 처리"""
-        
         conversation = self.conversation_memory.get(session_id)
         if not conversation:
-            # 세션이 없으면 새로 시작
             return await self.start_conversation(session_id, user_input)
         
-        # 현재 상태에 따른 처리
         response, next_state = await self._process_by_state(conversation, user_input)
         
-        # 대화 턴 기록
         turn = ConversationTurn(
-            turn_id=f"turn_{len(conversation.turns) + 1}",
-            user_input=user_input,
-            agent_response=response,
+            turn_id=f"turn_{len(conversation.turns) + 1}", user_input=user_input,
+            agent_response=response, 
             interaction_type=self._determine_interaction_type(conversation, user_input),
             state_after=next_state
         )
-        
         conversation.add_turn(turn)
-        
         return response, {
             "conversation_state": conversation.current_state.value,
             "awaiting_input": conversation.awaiting_user_input
         }
-    
-    async def parse_user_query(self, user_input: str, session_id: str) -> UserQuery:
-        """사용자 질의 파싱"""
-        
-        query = UserQuery(
-            text=user_input,
-            session_id=session_id
-        )
-        
-        # 위치 추출
-        query.location = self._extract_location(user_input)
-        
-        # 예산 추출
-        query.budget = self._extract_budget(user_input)
-        
-        # 날짜 추출
-        query.date = self._extract_date(user_input)
-        
-        # 선호도 추출
-        interests = self._extract_interests(user_input)
-        if interests:
-            query.add_preference("interests", interests)
-        
-        # 파싱 완료 표시
-        query.parsed = True
-        query.confidence_score = self._calculate_confidence(query)
-        
-        return query
-    
-    def _extract_location(self, text: str) -> Optional[str]:
-        """위치 정보 추출"""
-        # 주요 도시/지역 패턴
-        locations = [
-            "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
-            "제주", "강남", "홍대", "명동", "인사동", "이태원", "신촌", "압구정",
-            "강북", "강동", "강서", "관악", "노원", "도봉", "동대문", "마포",
-            "서대문", "성동", "성북", "송파", "양천", "영등포", "용산", "은평",
-            "종로", "중구", "중랑"
-        ]
-        
-        for location in locations:
-            if location in text:
-                return location
-        
-        return None
-    
-    def _extract_budget(self, text: str) -> Optional[float]:
-        """예산 정보 추출"""
-        # "10만원", "100000원", "10만", "100000" 패턴
-        patterns = [
-            r'(\d+)만원',      # 10만원
-            r'(\d+)만',        # 10만
-            r'(\d+)원',        # 100000원 (5자리 이상)
-            r'예산.*?(\d+)만', # 예산은 10만
-            r'(\d+)정도'       # 10만 정도
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                amount = int(match.group(1))
-                # 만원 단위인지 원 단위인지 판단
-                if '만' in pattern or amount < 1000:
-                    return float(amount * 10000)
-                else:
-                    return float(amount)
-        
-        return None
-    
-    def _extract_date(self, text: str) -> Optional[str]:
-        """날짜 정보 추출 (간단한 패턴)"""
-        date_patterns = [
-            "오늘", "내일", "모레", "이번주", "다음주", "주말", "토요일", "일요일"
-        ]
-        
-        for pattern in date_patterns:
-            if pattern in text:
-                return pattern
-        
-        return None
-    
-    def _extract_interests(self, text: str) -> List[str]:
-        """관심사/선호도 추출"""
-        interests = []
-        
-        # 카테고리 키워드 맵핑
-        category_keywords = {
-            "문화재": ["문화재", "궁", "고궁", "한옥", "전통", "역사"],
-            "카페": ["카페", "커피", "디저트", "브런치"],
-            "박물관": ["박물관", "미술관", "갤러리", "전시"],
-            "쇼핑": ["쇼핑", "백화점", "마트", "시장", "구매"],
-            "공원": ["공원", "산책", "자연", "숲"],
-            "레스토랑": ["레스토랑", "식당", "맛집", "음식", "식사"],
-            "전망대": ["전망", "뷰", "야경", "타워"],
-            "테마파크": ["놀이공원", "테마파크", "롤러코스터"],
-            "해변": ["바다", "해변", "해수욕장", "바닷가"]
-        }
-        
-        for category, keywords in category_keywords.items():
-            if any(keyword in text for keyword in keywords):
-                interests.append(category)
-        
-        return interests
-    
-    def _calculate_confidence(self, query: UserQuery) -> float:
-        """파싱 신뢰도 계산"""
-        score = 0.0
-        
-        if query.has_location():
-            score += 0.4
-        if query.has_budget():
-            score += 0.3
-        if query.get_interests():
-            score += 0.2
-        if query.date:
-            score += 0.1
-        
-        return min(score, 1.0)
-    
+
     async def _generate_initial_response(self, user_query: UserQuery) -> str:
-        """초기 응답 생성"""
-        
+        if not self.gemini_model and not user_query.parsed:
+             return "죄송합니다, 현재 서비스가 원활하지 않습니다. 잠시 후 다시 시도해주세요. (API 키 또는 LLM 초기화 확인 필요)"
         if user_query.confidence_score < 0.3:
-            # 정보가 부족한 경우
             return self._generate_clarification_request(user_query)
         
-        # 기본 정보가 있는 경우
-        response = f"✨ {user_query.location}에서 데이트 계획을 세워드릴게요!\n\n"
-        
-        # 파악된 정보 확인
-        if user_query.has_budget():
-            response += f"💰 예산: {int(user_query.budget):,}원\n"
+        response_parts = ["알겠습니다!"]
+        if user_query.location: response_parts.append(f"{user_query.location}에서")
+        if user_query.date: response_parts.append(f"{user_query.date}에")
+        if user_query.get_preference('interests'): response_parts.append(f"{', '.join(user_query.get_preference('interests'))} 활동을 포함하여")
+        if user_query.budget is not None: response_parts.append(f"약 {int(user_query.budget)}원 예산으로")
+        response_parts.append("데이트 계획을 세워볼게요. 잠시만 기다려주세요.")
+        return " ".join(response_parts)
+
         
         if user_query.get_interests():
             interests_str = ", ".join(user_query.get_interests())
