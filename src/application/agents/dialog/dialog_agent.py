@@ -10,30 +10,26 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 
 # 기존 import 유지 및 UserQuery 경로 확인
-from ....domain.entities.conversation import (
+from src.domain.entities.conversation import (
     Conversation,
     ConversationTurn,
     UserQuery,
     ConversationState,
     InteractionType,
 )
-from ...managers.conversation_manager import ConversationManager
-from ..super_agent import SuperAgent
-from ....domain.entities.tourist_spot import TouristSpot
+from src.application.managers.conversation_manager import ConversationManager
+from src.application.agents.super_agent import SuperAgent
+from src.domain.entities.tourist_spot import TouristSpot
 
 # .env 파일에서 환경 변수 로드
 # dialog_agent.py 파일의 위치를 기준으로 .env 파일 경로 설정
-# (src/application/agents/dialog/dialog_agent.py -> datingapp/.env)
-BASE_DIR = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-if os.path.exists(ENV_PATH):
-    load_dotenv(dotenv_path=ENV_PATH)
-else:
-    print(
-        f"Warning: .env file not found at {ENV_PATH}. Make sure GOOGLE_API_KEY is set in your environment."
-    )
+# .env 파일에서 환경 변수 로드
+# python-dotenv는 자동으로 현재 작업 디렉토리부터 상위로 .env 파일을 검색합니다.
+# python -m src.main 실행 시 CWD는 프로젝트 루트이므로, 프로젝트 루트의 .env 파일이 로드됩니다.
+load_dotenv()
+# GOOGLE_API_KEY가 로드되었는지 확인 (선택적이지만 권장)
+if not os.getenv("GOOGLE_API_KEY"):
+    print("Warning: GOOGLE_API_KEY not found in environment variables. Please ensure .env file is correctly set up at the project root or GOOGLE_API_KEY is set in your system environment.")
 
 
 class DialogAgent:
@@ -81,6 +77,7 @@ class DialogAgent:
         만약 특정 정보가 없다면 해당 키의 값은 null 또는 빈 리스트/문자열로 설정해주세요.
         """
         try:
+            print(f"\n[LLM Call] Extracting entities from user input: '{text}' using Gemini...")
             response = await self.gemini_model.generate_content_async(prompt)
             content_string = ""
             if hasattr(response, "text") and response.text:
@@ -194,17 +191,70 @@ class DialogAgent:
         )
         self.conversation_manager.start_conversation(session_id, user_query)
         self.conversation_memory[session_id] = conversation
-        response = await self._generate_initial_response(user_query)
+        final_response_text: str
+
+        # Check if we have enough information to proceed with planning
+        if user_query.location and user_query.get_interests():
+            try:
+                print(f"\n[DialogAgent] User query parsed. Location: {user_query.location}, Interests: {user_query.get_interests()}.")
+                # initial_ack = await self._generate_initial_response(user_query) # Optional: send an initial ack
+                # print(f"Agent (temp ack): {initial_ack}")
+
+                print(f"\n[DialogAgent] Searching for tourist spots in '{user_query.location}' for interests {user_query.get_interests()}...")
+                budget_for_search = int(user_query.budget) if user_query.budget is not None else 0
+
+                tourist_spots: List[TouristSpot] = await self.super_agent.search_spots(
+                    location=user_query.location,
+                    interests=user_query.get_interests(),
+                    budget=budget_for_search
+                )
+
+                if not tourist_spots:
+                    print(f"\n[DialogAgent] No tourist spots found for '{user_query.location}' with interests {user_query.get_interests()}.")
+                    final_response_text = f"죄송합니다. '{user_query.location}'에서 {', '.join(user_query.get_interests())} 관련 장소를 찾지 못했어요. 다른 관심사를 알려주시겠어요?"
+                    conversation.current_state = ConversationState.AWAITING_USER_INPUT # Or CLARIFICATION_NEEDED
+                else:
+                    print(f"\n[DialogAgent] Found {len(tourist_spots)} spots. Now creating a plan...")
+                    plan_result = await self.super_agent.create_plan(
+                        spots=tourist_spots,
+                        user_prefs=user_query.preferences,
+                        date=user_query.date
+                    )
+                    
+                    if isinstance(plan_result, str):
+                        final_response_text = plan_result
+                    elif hasattr(plan_result, 'to_string_representation'):
+                        final_response_text = plan_result.to_string_representation()
+                    else:
+                        final_response_text = f"데이트 계획이 준비되었습니다: {str(plan_result)}"
+                    print(f"\n[DialogAgent] Plan created: {final_response_text}")
+                    conversation.current_state = ConversationState.AWAITING_USER_INPUT # Or PLAN_PROVIDED
+
+            except Exception as e:
+                print(f"\n[DialogAgent] Error during planning: {e}") # Log full traceback for debugging
+                final_response_text = "죄송합니다, 계획을 세우는 중 오류가 발생했어요. 다시 시도해 주시겠어요?"
+                conversation.current_state = ConversationState.AWAITING_USER_INPUT # Or ERROR
+        else:
+            print(f"\n[DialogAgent] Not enough information to plan. Location: {user_query.location}, Interests: {user_query.get_interests()}.")
+            if not user_query.location:
+                final_response_text = "어디로 데이트를 가고 싶으신가요? 장소를 알려주세요."
+            elif not user_query.get_interests():
+                final_response_text = "어떤 활동에 관심 있으신가요? 관심사를 알려주세요."
+            else:
+                final_response_text = "데이트 계획을 위해 추가 정보가 필요합니다. 무엇을 도와드릴까요?"
+            conversation.current_state = ConversationState.AWAITING_USER_INPUT # Or CLARIFICATION_NEEDED
+
+        # Update conversation turn with the final response
         turn = ConversationTurn(
             turn_id=f"turn_{len(conversation.turns) + 1}",
             user_input=user_input,
-            agent_response=response,
-            interaction_type=InteractionType.INITIAL_QUERY,
-            state_after=ConversationState.INITIAL_PLANNING,
+            agent_response=final_response_text,
+            interaction_type=InteractionType.INITIAL_QUERY, # Could be more specific based on outcome
+            state_after=conversation.current_state,
         )
         conversation.add_turn(turn)
         self.conversation_manager.update_turn(session_id, turn)
-        return response, {"conversation_state": conversation.current_state.value}
+        return final_response_text, {"conversation_state": conversation.current_state.value}
 
     async def handle_user_input(
         self, session_id: str, user_input: str
@@ -240,9 +290,10 @@ class DialogAgent:
             response_parts.append(f"{user_query.location}에서")
         if user_query.date:
             response_parts.append(f"{user_query.date}에")
-        if user_query.get_preference("interests"):
+        interests = user_query.get_interests()
+        if interests:
             response_parts.append(
-                f"{', '.join(user_query.get_preference('interests'))} 활동을 포함하여"
+                f"{', '.join(interests)} 활동을 포함하여"
             )
         if user_query.budget is not None:
             response_parts.append(f"약 {int(user_query.budget)}원 예산으로")

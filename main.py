@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 
-from application.agents.dialog.dialog_agent import DialogAgent
+from src.application.agents.dialog.dialog_agent import DialogAgent
 
 async def interactive_chat() -> None:
     agent = DialogAgent()
