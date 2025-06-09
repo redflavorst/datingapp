@@ -1,6 +1,5 @@
 # src/application/agents/research/tourist_spot_researcher.py
 from typing import List, Dict, Optional, Any
-import asyncio
 import random
 from ....domain.entities.tourist_spot import TouristSpot, Location, SpotCategory, PriceRange
 

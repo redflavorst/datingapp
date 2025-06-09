@@ -3,8 +3,6 @@ import os
 import json
 import re
 from typing import Dict, List, Optional, Tuple, Any
-import uuid 
-import asyncio 
 
 # google-generativeai 라이브러리 import
 import google.generativeai as genai
@@ -193,15 +191,6 @@ class DialogAgent:
         if user_query.budget is not None: response_parts.append(f"약 {int(user_query.budget)}원 예산으로")
         response_parts.append("데이트 계획을 세워볼게요. 잠시만 기다려주세요.")
         return " ".join(response_parts)
-
-        
-        if user_query.get_interests():
-            interests_str = ", ".join(user_query.get_interests())
-            response += f"🎯 관심사: {interests_str}\n"
-        
-        response += "\n🔍 맞춤 관광지를 찾아보고 있어요. 잠시만 기다려주세요!"
-        
-        return response
     
     def _generate_clarification_request(self, user_query: UserQuery) -> str:
         """명확화 질문 생성"""
