@@ -1,7 +1,10 @@
 # src/application/agents/research/tourist_spot_researcher.py
 from typing import List, Dict, Optional, Any
 import random
+import logging
 from ....domain.entities.tourist_spot import TouristSpot, Location, SpotCategory, PriceRange
+
+logger = logging.getLogger(__name__)
 
 class TouristSpotResearcher:
     """관광지 조사 에이전트"""
@@ -10,12 +13,14 @@ class TouristSpotResearcher:
         # Mock 데이터로 시작 (나중에 실제 API로 교체)
         self.sample_spots = self._load_sample_spots()
     
-    async def search_spots(self, 
+    async def search_spots(self,
                           location: str,
                           categories: List[str] = None,
                           budget_per_spot: Optional[int] = None,
                           max_results: int = 10) -> List[TouristSpot]:
         """관광지 검색"""
+
+        logger.debug("TouristSpotResearcher.search_spots: location=%s", location)
         
         print(f"🔍 {location}에서 관광지를 검색하고 있습니다...")
         
@@ -42,6 +47,8 @@ class TouristSpotResearcher:
     
     async def get_detailed_info(self, spot_id: str) -> Optional[Dict[str, Any]]:
         """관광지 상세 정보 조회"""
+
+        logger.debug("TouristSpotResearcher.get_detailed_info: id=%s", spot_id)
         
         spot = self._find_spot_by_id(spot_id)
         if not spot:
