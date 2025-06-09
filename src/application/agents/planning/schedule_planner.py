@@ -2,9 +2,12 @@
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, time, timedelta
 import uuid
+import logging
 
 from ....domain.entities.tourist_spot import TouristSpot, Transportation
 from ....domain.entities.tourist_spot import DatePlan, DatePlanItem
+
+logger = logging.getLogger(__name__)
 
 class SchedulePlanner:
     """일정 계획 에이전트"""
@@ -17,6 +20,8 @@ class SchedulePlanner:
                               user_preferences: Dict[str, Any],
                               date: datetime) -> DatePlan:
         """데이트 계획 생성"""
+
+        logger.debug("SchedulePlanner.create_date_plan with %d spots", len(spots))
         
         print(f"📅 {len(spots)}개 장소로 일정을 계획하고 있습니다...")
         

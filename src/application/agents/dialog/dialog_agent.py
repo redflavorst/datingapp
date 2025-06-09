@@ -4,6 +4,7 @@ import json
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+import logging
 
 # google-generativeai 라이브러리 import
 import google.generativeai as genai
@@ -30,6 +31,8 @@ load_dotenv()
 # GOOGLE_API_KEY가 로드되었는지 확인 (선택적이지만 권장)
 if not os.getenv("GOOGLE_API_KEY"):
     print("Warning: GOOGLE_API_KEY not found in environment variables. Please ensure .env file is correctly set up at the project root or GOOGLE_API_KEY is set in your system environment.")
+
+logger = logging.getLogger(__name__)
 
 
 class DialogAgent:
@@ -119,6 +122,7 @@ class DialogAgent:
             return {}
 
     async def parse_user_query(self, user_input: str, session_id: str) -> UserQuery:
+        logger.debug("parse_user_query called: session_id=%s, text=%s", session_id, user_input)
         query = UserQuery(text=user_input, session_id=session_id)
 
         if not self.gemini_model:
@@ -163,6 +167,7 @@ class DialogAgent:
         else:
             query.parsed = False
             query.confidence_score = 0.0
+        logger.debug("parsed query: %s", query)
         return query
 
     def _calculate_confidence_from_gemini(self, entities: Dict[str, Any]) -> float:
@@ -183,6 +188,7 @@ class DialogAgent:
     async def start_conversation(
         self, session_id: str, user_input: str
     ) -> Tuple[str, Dict[str, Any]]:
+        logger.debug("start_conversation called: session_id=%s", session_id)
         user_query = await self.parse_user_query(user_input, session_id)
         conversation = Conversation(
             session_id=session_id,
@@ -259,6 +265,7 @@ class DialogAgent:
     async def handle_user_input(
         self, session_id: str, user_input: str
     ) -> Tuple[str, Dict[str, Any]]:
+        logger.debug("handle_user_input called: session_id=%s", session_id)
         conversation = self.conversation_manager.get_conversation(session_id)
         if not conversation:
             return await self.start_conversation(session_id, user_input)
@@ -325,6 +332,7 @@ class DialogAgent:
         self, conversation: Conversation, user_input: str
     ) -> Tuple[str, ConversationState]:
         """대화 상태별 처리"""
+        logger.debug("_process_by_state: state=%s", conversation.current_state)
 
         current_state = conversation.current_state
 
@@ -345,6 +353,7 @@ class DialogAgent:
         self, conversation: Conversation, user_input: str
     ) -> Tuple[str, ConversationState]:
         """초기 계획 단계 처리"""
+        logger.debug("_handle_initial_planning called")
 
         # 추가 정보 수집
         additional_info = await self.parse_user_query(
@@ -391,6 +400,7 @@ class DialogAgent:
         self, conversation: Conversation, user_input: str
     ) -> Tuple[str, ConversationState]:
         """사용자 선택 처리"""
+        logger.debug("_handle_user_selection called")
 
         # 간단한 선택 파싱 (나중에 개선)
         selections = self._parse_selections(user_input)
@@ -435,6 +445,7 @@ class DialogAgent:
         self, conversation: Conversation, user_input: str
     ) -> Tuple[str, ConversationState]:
         """결과에 대한 피드백 처리"""
+        logger.debug("_handle_result_feedback called")
 
         if any(word in user_input for word in ["좋아", "마음에 들어", "완벽", "확정"]):
             response = "🎉 훌륭해요! 즐거운 데이트 되세요!"
@@ -452,6 +463,7 @@ class DialogAgent:
         self, conversation: Conversation, user_input: str
     ) -> Tuple[str, ConversationState]:
         """일반적인 입력 처리"""
+        logger.debug("_handle_general_input called")
 
         response = "말씀해주신 내용을 처리하고 있어요. 조금만 기다려주세요!"
         return response, conversation.current_state
